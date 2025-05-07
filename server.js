@@ -11,6 +11,14 @@ const fs = require('fs');
 const app = express();
 app.use(cors());
 app.use(express.json());
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  exposedHeaders: ['Content-Type', 'Authorization', 'Content-Length']
+}));
+
 
 // MongoDB Connection
 // mongoose.connect(process.env.MONGODB_URI)
@@ -79,11 +87,15 @@ if (!fs.existsSync(uploadDir)) {
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
+    console.log('Uploading file to:', uploadDir); // Add this line
+
     cb(null, uploadDir);
   },
   filename: (req, file, cb) => {
     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    cb(null, uniqueSuffix + path.extname(file.originalname));
+    const filename = uniqueSuffix + path.extname(file.originalname);
+    console.log('Generated filename:', filename); // Add this line
+    cb(null, filename);
   }
 });
 
@@ -224,8 +236,6 @@ const authorize = (role) => (req, res, next) => {
   next();
 };
 
-// Serve static files
-app.use('/uploads', express.static(uploadDir));
 
 // Enhanced Routes with better error handling
 app.post('/api/register', async (req, res) => {
@@ -320,10 +330,11 @@ app.post('/api/login', async (req, res) => {
     res.json({ 
       success: true,
       token,
+      role: user.role,
       user: {
         id: user._id,
         username: user.username,
-        role: user.role
+        role: user.role 
       }
     });
 
@@ -335,6 +346,8 @@ app.post('/api/login', async (req, res) => {
     });
   }
 });
+
+
 app.post('/api/media', authenticate, authorize('creator'), upload.single('media'), async (req, res) => {
     try {
       const { title, caption, location, people } = req.body;
@@ -352,7 +365,7 @@ app.post('/api/media', authenticate, authorize('creator'), upload.single('media'
         caption,
         location,
         people: people.split(',').map(p => p.trim()),
-        mediaUrl: '/uploads/' + req.file.filename,
+        mediaUrl: `https://instagram-clone-backend.azurewebsites.net/uploads/${req.file.filename}`,
         mediaType,
         userId: req.user._id
       });
@@ -372,8 +385,10 @@ app.post('/api/media', authenticate, authorize('creator'), upload.single('media'
 app.get('/api/media', async (req, res) => {
   try {
     const media = await Media.find().populate('userId', 'username');
+    console.log('Media found:', media.length); // Add this line
     res.json(media);
   } catch (error) {
+    console.error('Media fetch error:', error); // Add this line
     res.status(500).json({ message: error.message });
   }
 });
@@ -464,6 +479,38 @@ app.post('/api/media/:id/comments', authenticate, async (req, res) => {
       success: false,
       message: 'Internal server error' 
     });
+  });
+
+  app.delete('/api/media/:id', authenticate, async (req, res) => {
+    try {
+      // 1. Find the media to get the file path
+      const media = await Media.findById(req.params.id);
+      
+      if (!media) {
+        return res.status(404).json({ message: 'Media not found' });
+      }
+  
+      // 2. Delete the file from uploads directory
+      const filename = media.mediaUrl.split('/').pop();
+      const filePath = path.join(uploadDir, filename);
+      
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+        console.log(`Deleted file: ${filePath}`);
+      }
+  
+      // 3. Delete all related comments and ratings
+      await Comment.deleteMany({ mediaId: req.params.id });
+      await Rating.deleteMany({ mediaId: req.params.id });
+  
+      // 4. Finally delete the media document
+      await Media.findByIdAndDelete(req.params.id);
+  
+      res.json({ success: true, message: 'Media deleted successfully' });
+    } catch (error) {
+      console.error('Delete error:', error);
+      res.status(500).json({ message: error.message });
+    }
   });
   
   const PORT = process.env.PORT || 5000;
